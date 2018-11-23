@@ -3,9 +3,9 @@ heat_template_version: 2015-10-15
 description: |
    ####  Creates:
    #### - Cloud Network suitable for north-south traffic
-   #### - Gateway Instance (router)
+   #### - CentOS 7 Gateway Instance (router)
    #### Author: Brian King
-   #### version: 0.0.4a
+   #### version: 0.0.5a
    #### last modified: 2018-11-23
 
 parameter_groups:
@@ -13,7 +13,6 @@ parameter_groups:
 - label: Gateway Instance Settings
   parameters:
     - gwName
-    - gwImage
     - gwFlavor
 
 - label: Network Settings
@@ -34,18 +33,10 @@ parameters:
     label: 'Name of gateway instance'
     default: 'gatewayInstance00'
 
-  gwImage:
-    type: string
-    default: CentOS 7 (PVHVM) (Orchestration)
-    label: Gateway Instance Image Name or UUID
-    description: Image to be used for Gateway Instance
-    constraints:
-      - custom_constraint: glance.image
-
   gwFlavor:
     type: string
     default: 2 GB General Purpose v1
-    label: Gateway Instance Flavor Name or ID, such as "15 GB I/O v1"
+    label: 'Gateway Instance Flavor Name or ID (such as 4 GB General Purpose v1)'
     description: Must be a valid Rackspace Cloud Flavor
     constraints:
       - custom_constraint: nova.flavor
@@ -134,21 +125,70 @@ resources:
       name: { get_param: "OS::stack_name" }
       save_private_key: true
 
+  gwConfig:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      group: script
+      config:
+        str_replace:
+          template: |
+                    #!/bin/bash
+                    systemctl stop firewalld; systemctl mask firewalld
+                    systemctl enable iptables; systemctl start iptables
+                    systemctl enable ip6tables; systemctl start ip6tables
+                    cat > /etc/sysctl.d/30-fwd.conf << EOF
+                    net.ipv4.ip_forward = 1
+                    EOF
+                    sysctl -p /etc/sysctl.d/30-fwd.conf
+                    sed -i '/DEFROUTE/d' /etc/sysconfig/network-scripts/ifcfg-eth2
+                    sed -i '/GATEWAY/d' /etc/sysconfig/network-scripts/ifcfg-eth2
+                    echo 'DEFROUTE=yes' >> /etc/sysconfig/network-scripts/ifcfg-eth0
+                    systemctl restart network
+                    cat > /etc/sysconfig/iptables << EOF
+                    *nat
+                    :PREROUTING ACCEPT [0:0]
+                    :INPUT ACCEPT [0:0]
+                    :OUTPUT ACCEPT [0:0]
+                    :POSTROUTING ACCEPT [0:0]
+                    -A POSTROUTING -o eth0 -j MASQUERADE
+                    COMMIT
+                    *filter
+                    :INPUT ACCEPT [0:0]
+                    :FORWARD ACCEPT [0:0]
+                    :OUTPUT ACCEPT [0:0]
+                    -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+                    -A INPUT -p icmp -j ACCEPT
+                    -A INPUT -i lo -j ACCEPT
+                    -A INPUT -m conntrack --ctstate NEW -m tcp -p tcp --dport 22 -j ACCEPT
+                    -A INPUT -s $net_range.0/24 -j ACCEPT
+                    -A FORWARD -s $net_range.0/24 -j ACCEPT
+                    -A FORWARD -i eth0 -o eth2 -m state --state RELATED,ESTABLISHED -j ACCEPT
+                    -A FORWARD -i eth2 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+                    -A INPUT -j REJECT --reject-with icmp-host-prohibited
+                    -A FORWARD -j REJECT --reject-with icmp-host-prohibited
+                    COMMIT
+                    EOF
+                    chmod 600 /etc/sysconfig/iptables
+                    iptables-restore < /etc/sysconfig/iptables
+          params:
+            $net_range : { get_param: netRange }
+
   gwInstance:
     type: OS::Nova::Server
     properties:
       name: { get_param : gwName }
-      image: { get_param: gwImage }
+      image: CentOS 7 (PVHVM) (Orchestration)
       admin_pass: { get_attr: [ gwPass, value ] }
       key_name: { get_resource: gwSSHKey }
       flavor: general1-2
       config_drive: True
-      metadata:
-        created_by: cn_orch_template
+      user_data: { get_resource: gwConfig }
       networks:
         - network: '00000000-0000-0000-0000-000000000000'
         - network: '11111111-1111-1111-1111-111111111111'
         - port: { get_resource: cloudNetGatewayPort }
+      metadata:
+        created_by: cn_orch_template
 
 outputs:
   cloudNetworkName:
