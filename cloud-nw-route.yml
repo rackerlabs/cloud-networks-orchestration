@@ -1,0 +1,106 @@
+heat_template_version: 2015-10-15
+
+description: |
+   ####  Creates a /24 Cloud Network suitable for use with a gateway instance.
+   ####
+   #### Author: Brian King
+   #### version: 0.0.6a
+   #### last modified: 2018-11-17
+
+parameter_groups:
+
+- label: Network Settings
+  parameters:
+    - netRange
+    - netName
+
+- label: DNS Settings
+  parameters:
+    - primaryDNSIP
+    - secondaryDNSIP
+
+parameters:
+
+  primaryDNSIP:
+    type: string
+    label: 'Primary DNS Server. Mouse over the ? for each region''s DNS IPs.'
+    description: 'DFW: 72.3.128.240, HKG: 120.136.32.62, IAD: 69.20.0.164, LON: 83.138.151.80, ORD: 173.203.4.8, SYD: 119.9.60.62'
+    default: 72.3.128.240
+    constraints:
+    - allowed_values:
+      - 72.3.128.240
+      - 120.136.32.62
+      - 69.20.0.164
+      - 83.138.151.80
+      - 173.203.4.8
+      - 119.9.60.62
+
+  secondaryDNSIP:
+    type: string
+    label: 'Secondary DNS Server. Mouse over the ? for each region''s DNS IPs.'
+    description: 'DFW: 72.3.128.241, HKG: 120.136.32.63, IAD: 69.20.0.196, LON: 83.138.151.81, ORD: 173.203.4.9, SYD: 119.9.60.63'
+    default: 72.3.128.241
+    constraints:
+    - allowed_values:
+      - 72.3.128.241
+      - 120.136.32.63
+      - 69.20.0.196
+      - 83.138.151.81
+      - 173.203.4.9
+      - 119.9.60.63
+
+
+  netName:
+    type: string
+    label: 'Cloud Network Name'
+    description: Name of Cloud Network
+    default: 'cloudNetwork'
+
+  netRange:
+    type: string
+    label: 'Enter the first 3 octets of desired network range (such as 192.168.100)'
+    default: '172.19.241'
+    constraints:
+      - allowed_pattern: '^(?:(?:^|\.)(?:2(?:5[0-5]|[0-4]\d)|1?\d?\d)){3}$'
+        description: "please enter a valid 3 octets"
+
+resources:
+#Based on the input, we do a bunch of joins. This is verbose, but makes
+#it easier on the user.
+
+  cloudNet:
+    type: OS::Neutron::Net
+    properties:
+      name: { get_param: [netName] }
+
+  cloudNetSubnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: { get_param: [netName] }
+      network: { get_attr: [cloudNet, name] }
+      ip_version: 4
+      dns_nameservers: [{ get_param: [primaryDNSIP] }, { get_param: [secondaryDNSIP] }]
+      cidr: { list_join: ['.',  [ { get_param: netRange }, '0/24' ]] }
+      gateway_ip:  { list_join: ['.',  [ { get_param: netRange }, '1' ]] }
+      allocation_pools: [{'end': { list_join: ['.',  [ { get_param: netRange }, '254' ]] }, 'start': { list_join: ['.',  [ { get_param: netRange }, '9' ]] } }]
+
+outputs:
+  cloudNetworkName:
+    value: { get_attr: [cloudNet, name] }
+    description: 'Cloud Network name'
+
+  cloudNetworkRange:
+    value: { get_attr: [cloudNetSubnet, cidr] }
+    description: 'Cloud Network range'
+
+  cloudNetworkGatewayIP:
+    value: { get_attr: [cloudNetSubnet, gateway_ip] }
+    description: 'Cloud Network gateway IP'
+
+  allocationPool:
+    value: { get_attr: [cloudNetSubnet, allocation_pools] }
+    description: 'Subnet allocation pool'
+
+  dnsServerIPs:
+    value: { get_attr: [cloudNetSubnet, dns_nameservers] }
+    description: 'DNS Server IPs'
