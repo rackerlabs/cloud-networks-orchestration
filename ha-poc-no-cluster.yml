@@ -87,7 +87,7 @@ resources:
 
 #begin Cloud Network resources
 
-  :
+  cloudNet:
     type: OS::Neutron::Net
     properties:
       name: { get_param: [netName] }
@@ -118,33 +118,16 @@ resources:
 
 #Begin generic server resources
 
-  stackSSHKey:
-    type: OS::Nova::KeyPair
-    properties:
-      name: { get_param: "OS::stack_name" }
-      save_private_key: true
+  # stackSSHKey:
+  #   type: OS::Nova::KeyPair
+  #   properties:
+  #     name: { get_param: "OS::stack_name" }
+  #     save_private_key: true
 
 #Begin HAProxy Server resources
 
   hapPass:
       type: OS::Heat::RandomString
-
-  gwConfig:
-    type: OS::Heat::SoftwareConfig
-    properties:
-      group: script
-      config:
-        str_replace:
-          template: |
-                    #!/bin/bash
-                    curl https://raw.githubusercontent.com/beekhof/fence_openstack/master/fence_openstack -o /usr/sbin/fence_openstack
-                    chmod +x /usr/sbin/fence_openstack
-                    apt-get install -y gcc
-                    apt-get install -y python-pip
-                    pip install rackspace-novaclient
-                    pip install --upgrade python-novaclient==2.6.2
-          params:
-            $net_range : { get_param: netRange }
 
 
   hapPkgs:
@@ -152,10 +135,6 @@ resources:
     properties:
       cloud_config:
         packages:
-          - haproxy
-          - corosync
-          - pacemaker
-          - iptables-persistent
           - xenstore-utils
           - arping
 
@@ -283,6 +262,6 @@ outputs:
     value: { get_attr: [hapPass, value ] }
     description: 'Admin Password of HAProxy Servers'
 
-  stackPrivateSSHKey:
-    value: { get_attr: ['stackSSHKey', 'private_key'] }
-    description: 'private Key for accessing HAProxy Server'
+  # stackPrivateSSHKey:
+  #   value: { get_attr: ['stackSSHKey', 'private_key'] }
+  #   description: 'private Key for accessing HAProxy Server'
