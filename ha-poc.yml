@@ -1,0 +1,288 @@
+heat_template_version: 2015-10-15
+
+description: |
+   #### Creates:
+   #### - 2 HAProxy frontend servers with a shared IP
+   #### - 2 backend servers in the pool
+   #### Author: Brian King
+   #### version: 0.0.1a
+   #### last modified: 2018-12-11
+
+parameter_groups:
+
+- label: HAProxy Server Settings
+  parameters:
+    - hapName
+    - hapImage
+    - hapFlavor
+    - sshKey
+
+- label: Network Settings
+  parameters:
+    - netRange
+    - netName
+
+parameters:
+
+#begin HAProxy Server params
+
+  hapName:
+    type: string
+    label: 'Name of HAProxy Server'
+    default: 'HAProxy00'
+    constraints:
+      - allowed_pattern: '^[\w-]+$'
+        description: "Server name may only have alphanumeric characters, underscores, and dashes"
+
+  hapImage:
+    type: string
+    default: Ubuntu 18.04 LTS (Bionic Beaver) (PVHVM)
+    label: Cloud Server image to be used for HAProxy Server
+    description: Cloud Server image to be used for HAProxy Server
+    constraints:
+      - custom_constraint: glance.image
+
+  hapFlavor:
+    type: string
+    default: 2 GB General Purpose v1
+    label: HAProxy Server Flavor Name or ID
+    description: Choose from the list
+    constraints:
+    - allowed_values:
+      - 1 GB General Purpose v1
+      - 2 GB General Purpose v1
+      - 4 GB General Purpose v1
+      - 8 GB General Purpose v1
+      - 15 GB I/O
+      - 30 GB I/O
+      description: Choose from the list
+
+  sshKey:
+    type: string
+    label: 'Keypair which provides access to devices'
+    description: 'Keypair which provides access to devices'
+    constraints:
+      - custom_constraint: nova.keypair
+
+
+#begin network params
+
+  netName:
+    type: string
+    label: 'Cloud Network Name'
+    description: Name of Cloud Network
+    default: 'cloudNetwork'
+
+  netRange:
+    type: string
+    label: 'Enter the first 3 octets of desired network range (such as 192.168.100)'
+    default: '172.19.241'
+    constraints:
+      - allowed_pattern: '^(?:(?:^|\.)(?:2(?:5[0-5]|[0-4]\d)|1?\d?\d)){3}$'
+        description: "please enter a valid 3 octets"
+
+
+
+resources:
+
+#begin Cloud Network resources
+
+  :
+    type: OS::Neutron::Net
+    properties:
+      name: { get_param: [netName] }
+
+  cloudNetSubnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: { get_param: [netName] }
+      network: { get_attr: [cloudNet, name] }
+      ip_version: 4
+      cidr: { list_join: ['.',  [ { get_param: netRange }, '0/24' ]] }
+      allocation_pools: [{'end': { list_join: ['.',  [ { get_param: netRange }, '254' ]] }, 'start': { list_join: ['.',  [ { get_param: netRange }, '9' ]] } }]
+
+
+#begin shared IP resources
+
+  publicNetSharedIP:
+    type: Rackspace::Cloud::SharedIP
+    properties:
+      network_id: 00000000-0000-0000-0000-000000000000
+      ports: [{ get_attr: [ hapServer01, addresses, public, 0, port ] }, { get_attr: [ hapServer02, addresses, public, 0, port ] }]
+
+  publicNetSharedIPAssociation:
+    type: Rackspace::Cloud::AssociateSharedIP
+    properties:
+      shared_ip:  { get_attr: [ publicNetSharedIP, shared_ip_address, ip_address, id ]}
+      servers: [{ get_resource: hapServer01}, {get_resource: hapServer02 }]
+
+#Begin generic server resources
+
+  stackSSHKey:
+    type: OS::Nova::KeyPair
+    properties:
+      name: { get_param: "OS::stack_name" }
+      save_private_key: true
+
+#Begin HAProxy Server resources
+
+  hapPass:
+      type: OS::Heat::RandomString
+
+  gwConfig:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      group: script
+      config:
+        str_replace:
+          template: |
+                    #!/bin/bash
+                    curl https://raw.githubusercontent.com/beekhof/fence_openstack/master/fence_openstack -o /usr/sbin/fence_openstack
+                    chmod +x /usr/sbin/fence_openstack
+                    apt-get install -y gcc
+                    apt-get install -y python-pip
+                    apt-get install -y rackspace-novaclient
+                    pip install --upgrade python-novaclient==6.0
+          params:
+            $net_range : { get_param: netRange }
+
+
+  hapPkgs:
+    type: OS::Heat::CloudConfig
+    properties:
+      cloud_config:
+        packages:
+          - haproxy
+          - corosync
+          - pacemaker
+          - iptables-persistent
+          - xenstore-utils
+          - arping
+
+  hapCloudInit:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: { get_resource: hapPkgs }
+
+  hapServer01:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          template: $hap01
+          params:
+              $hap01: { get_param: hapName }
+      image: { get_param: hapImage }
+      admin_pass: { get_attr: [ hapPass, value ]}
+      key_name: { get_param: sshKey }
+      flavor: { get_param: hapFlavor }
+      config_drive: True
+      user_data: { get_resource: hapCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+        - network: { get_resource: cloudNet }
+
+  hapServer02:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          template: $hap02
+          params:
+              $hap: { get_param: hapName }
+      image: { get_param: hapImage }
+      admin_pass: { get_attr: [ hapPass, value ]}
+      key_name: { get_param: sshKey }
+      flavor: { get_param: hapFlavor }
+      config_drive: True
+      user_data: { get_resource: hapCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+        - network: { get_resource: cloudNet }
+
+  insidePkgs:
+    type: OS::Heat::CloudConfig
+    properties:
+      cloud_config:
+        packages:
+          - apache2
+          - iptables-persistent
+          - xenstore-utils
+
+  insideCloudInit:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: { get_resource: insidePkgs }
+
+
+  insideServer01:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          template: $hap-inside-server-01
+          params:
+              $hap: { get_param: hapName }
+      image: Ubuntu 18.04 LTS (Bionic Beaver) (PVHVM)
+      admin_pass: { get_attr: [ hapPass, value ]}
+      key_name: { get_param: sshKey }
+      flavor: 3
+      config_drive: True
+      user_data: { get_resource: insideCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+        - network: { get_resource: cloudNet }
+
+  insideServer02:
+    type: OS::Nova::Server
+    properties:
+      name:
+        str_replace:
+          template: $hap-inside-server-02
+          params:
+              $hap: { get_param: hapName }
+      image: Ubuntu 18.04 LTS (Bionic Beaver) (PVHVM)
+      admin_pass: { get_attr: [ hapPass, value ]}
+      key_name: { get_param: sshKey }
+      flavor: 3
+      config_drive: True
+      user_data: { get_resource: insideCloudInit }
+      metadata:
+        created_by: cn_orch_template
+      networks:
+        - network: '00000000-0000-0000-0000-000000000000'
+        - network: '11111111-1111-1111-1111-111111111111'
+        - network: { get_resource: cloudNet }
+
+outputs:
+
+  sharedPublicIPDisplay:
+    value: { get_attr: [ publicNetSharedIP, shared_ip_address, ip_address ]}
+    description: 'Shared IP object'
+
+  hap01PublicIPs:
+      value: { get_attr: [hapServer01, networks, public] }
+      description: 'Public IPs of HAProxy Server 01'
+
+  hap02PublicIPs:
+      value: { get_attr: [hapServer02, networks, public] }
+      description: 'Public IPs of HAProxy Server 02'
+
+  hapPassDisplay:
+    value: { get_attr: [hapPass, value ] }
+    description: 'Admin Password of HAProxy Servers'
+
+  stackPrivateSSHKey:
+    value: { get_attr: ['stackSSHKey', 'private_key'] }
+    description: 'private Key for accessing HAProxy Server'
